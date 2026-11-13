@@ -16,6 +16,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type s3Cache struct {
@@ -39,6 +40,15 @@ var (
 		Name: "bazel_remote_s3_cache_misses",
 		Help: "The total number of s3 backend cache misses",
 	})
+	requests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bazel_remote_s3_requests_total",
+		Help: "The total number of HTTP requests sent to the s3 backend, including retries",
+	}, []string{"method", "code"})
+	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bazel_remote_s3_request_duration_seconds",
+		Help:    "The duration of HTTP requests sent to the s3 backend, including retries",
+		Buckets: prometheus.ExponentialBuckets(0.005, 2, 13),
+	}, []string{"method"})
 )
 
 // Used in place of minio's verbose "NoSuchKey" error.
@@ -78,6 +88,9 @@ func New(
 	tr.MaxIdleConns = MaxIdleConns
 	tr.MaxIdleConnsPerHost = MaxIdleConns
 
+	instrumentedTr := promhttp.InstrumentRoundTripperCounter(requests,
+		promhttp.InstrumentRoundTripperDuration(requestDuration, tr))
+
 	// Initialize minio client with credentials
 	opts := &minio.Options{
 		Creds:        Credentials,
@@ -85,7 +98,7 @@ func New(
 
 		Region:    Region,
 		Secure:    secure,
-		Transport: tr,
+		Transport: instrumentedTr,
 	}
 	minioCore, err = minio.NewCore(Endpoint, opts)
 	if err != nil {
